@@ -101,8 +101,32 @@ e1000_transmit(char *buf, int len)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after send completes.
   //
+  // 락 획득
+  acquire(&e1000_lock);
 
-  
+  // TAIL 인덱스 획득
+  int idx = regs[E1000_TDT];
+
+  // 오버플로우인지 확인 (이전 전송 요청 완료 여부 확인)
+  if ((tx_ring[idx].status & E1000_TXD_STAT_DD) == 0) {
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // 마지막 버퍼 해제
+  if (tx_bufs[idx])
+    kfree(tx_bufs[idx]);
+
+  tx_bufs[idx] = buf;
+  tx_ring[idx].length = len;
+  tx_ring[idx].addr = (uint64) (buf);
+  tx_ring[idx].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  tx_ring[idx].status = 0;
+
+  // 링 위치 업데이트
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
@@ -115,6 +139,31 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
+
+  while (1) {
+    int idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+    if ((rx_ring[idx].status & E1000_RXD_STAT_DD) == 0) {
+      return;
+    }
+
+    if (rx_ring[idx].status & E1000_RXD_STAT_EOP) {
+
+      int len = rx_ring[idx].length;
+      
+      net_rx(rx_bufs[idx], len);
+      rx_bufs[idx] = kalloc();
+      if(rx_bufs[idx] == 0){
+        return;
+      }
+      memset(rx_bufs[idx], 0, len);
+      rx_ring[idx].status = 0;
+      rx_ring[idx].addr = (uint64)rx_bufs[idx];
+      rx_ring[idx].length = len;
+
+    }
+    regs[E1000_RDT] = idx;
+  }
 
 }
 
